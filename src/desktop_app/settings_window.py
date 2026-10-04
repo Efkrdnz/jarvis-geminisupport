@@ -143,14 +143,15 @@ def _build_field_metadata() -> List[FieldMeta]:
       "llm", "bool")
 
     # --- LLM Provider ---
-    # Selects which local runtime serves the LLM. The connection and model
-    # fields below are nullable: leaving them empty falls back to the Ollama
-    # settings on the "LLM & AI Models" page, so a default (Ollama) install
-    # never needs to touch this page.
-    f("llm_provider", "Provider", "Which local runtime serves the LLM",
+    # Selects what serves the LLM. The connection and model fields below are
+    # nullable: leaving them empty falls back to the Ollama settings on the
+    # "LLM & AI Models" page (or the Gemini defaults on the Gemini path), so a
+    # default (Ollama) install never needs to touch this page.
+    f("llm_provider", "Provider", "What serves the LLM",
       "llm_provider", "choice",
       choices=[("ollama", "Ollama (local)"),
-               ("openai_compatible", "OpenAI-compatible server")])
+               ("openai_compatible", "OpenAI-compatible server"),
+               ("gemini", "Google Gemini (cloud)")])
     f("llm_base_url", "Base URL",
       "Provider API base URL (e.g. http://localhost:1234/v1 for LM Studio). "
       "Leave empty to use the Ollama URL.",
@@ -167,7 +168,8 @@ def _build_field_metadata() -> List[FieldMeta]:
       "llm_provider", "choice",
       choices=[("", "Same as chat provider"),
                ("ollama", "Ollama (local)"),
-               ("openai_compatible", "OpenAI-compatible server")])
+               ("openai_compatible", "OpenAI-compatible server"),
+               ("gemini", "Google Gemini (cloud)")])
     f("embedding_base_url", "Embedding Base URL",
       "Override base URL for embeddings. Leave empty to inherit from the "
       "chat provider (or the Ollama URL).",
@@ -177,6 +179,23 @@ def _build_field_metadata() -> List[FieldMeta]:
       "llm_provider", "password", nullable=True)
     f("embedding_model", "Embedding Model",
       "Embedding model name. Leave empty to use the Ollama embedding model.",
+      "llm_provider", "str", nullable=True)
+    f("gemini_api_key", "Gemini API Key",
+      "Google Gemini API key (used when a provider is Google Gemini). Leave "
+      "empty to use the GEMINI_API_KEY environment variable.",
+      "llm_provider", "password", nullable=True)
+    f("gemini_chat_model", "Gemini Chat Model",
+      "Gemini model for replies and planning. Leave empty for the latest Flash model.",
+      "llm_provider", "str", nullable=True)
+    f("gemini_fast_model", "Gemini Fast Model",
+      "Gemini model for voice intent and tool routing. Leave empty for the "
+      "latest Flash-Lite model.",
+      "llm_provider", "str", nullable=True)
+    f("gemini_embed_model", "Gemini Embedding Model",
+      "Gemini model for memory embeddings. Leave empty for the default.",
+      "llm_provider", "str", nullable=True)
+    f("gemini_base_url", "Gemini API URL",
+      "Override the Gemini API endpoint (e.g. a proxy). Leave empty for Google's.",
       "llm_provider", "str", nullable=True)
 
     # --- Text-to-Speech ---

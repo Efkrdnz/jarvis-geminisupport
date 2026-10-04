@@ -126,8 +126,8 @@ class Database:
         
         # If sqlite-vss is not available, use best available vector store (FAISS or Python fallback)
         if not self.is_vss_enabled:
-            from ..utils.vector_store import get_best_vector_store
-            self._python_vector_store = get_best_vector_store(db_path, dimension=768)
+            from ..utils.vector_store import MEMORY_EMBEDDING_DIMENSION, get_best_vector_store
+            self._python_vector_store = get_best_vector_store(db_path, dimension=MEMORY_EMBEDDING_DIMENSION)
             
             # Log which vector store implementation is being used
             import sys

@@ -3,7 +3,8 @@
 Two factories share one provider catalogue:
 
 - :func:`get_llm_backend` — chat / completion path. Dispatches on
-  ``settings.llm_provider``.
+  ``settings.llm_provider`` (``ollama``, ``openai_compatible`` or
+  ``gemini``).
 - :func:`get_embedding_backend` — embeddings path. Dispatches on
   ``settings.embedding_provider``, falling back to the LLM provider
   when unset. The override exists for runtimes that ship chat without
@@ -16,19 +17,21 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from .backend import LLMBackend
+from .gemini import DEFAULT_GEMINI_BASE_URL, GeminiBackend
 from .ollama import OllamaBackend
 from .openai_compatible import OpenAICompatibleBackend
 
 
 _OLLAMA = "ollama"
 _OPENAI_COMPATIBLE = "openai_compatible"
+_GEMINI = "gemini"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 
 
 def _resolve_provider(value: Any) -> str:
     if isinstance(value, str):
         v = value.strip().lower()
-        if v in (_OLLAMA, _OPENAI_COMPATIBLE):
+        if v in (_OLLAMA, _OPENAI_COMPATIBLE, _GEMINI):
             return v
     return _OLLAMA
 
@@ -41,7 +44,13 @@ def _str_attr(settings: Any, name: str, default: str = "") -> str:
 def _build(provider: str, base_url: str, api_key: Optional[str]) -> LLMBackend:
     if provider == _OPENAI_COMPATIBLE:
         return OpenAICompatibleBackend(base_url, api_key=api_key)
+    if provider == _GEMINI:
+        return GeminiBackend(base_url, api_key=api_key)
     return OllamaBackend(base_url)
+
+
+def _gemini_base_url(settings: Any) -> str:
+    return _str_attr(settings, "gemini_base_url", DEFAULT_GEMINI_BASE_URL)
 
 
 def get_llm_backend(settings: Any) -> LLMBackend:
@@ -53,6 +62,9 @@ def get_llm_backend(settings: Any) -> LLMBackend:
     backend pointed at a stale OpenAI-compatible URL.
     """
     provider = _resolve_provider(getattr(settings, "llm_provider", None))
+    if provider == _GEMINI:
+        return _build(provider, _gemini_base_url(settings),
+                      _str_attr(settings, "gemini_api_key") or None)
     if provider == _OPENAI_COMPATIBLE:
         base_url = _str_attr(settings, "llm_base_url") or _str_attr(
             settings, "ollama_base_url", _DEFAULT_OLLAMA_URL
@@ -76,6 +88,13 @@ def get_embedding_backend(settings: Any) -> LLMBackend:
         provider = _resolve_provider(raw)
     else:
         provider = _resolve_provider(getattr(settings, "llm_provider", None))
+
+    if provider == _GEMINI:
+        base_url = _str_attr(settings, "embedding_base_url") or _gemini_base_url(settings)
+        api_key = _str_attr(settings, "embedding_api_key") or _str_attr(
+            settings, "gemini_api_key"
+        ) or None
+        return _build(provider, base_url, api_key)
 
     base_url = _str_attr(settings, "embedding_base_url")
     if not base_url:

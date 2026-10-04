@@ -13,6 +13,7 @@ Two interchangeable entry points for the same functionality:
   and construct an :class:`OllamaBackend` internally.
 
 Other public names: :class:`OllamaBackend`, :class:`OpenAICompatibleBackend`,
+:class:`GeminiBackend`,
 :class:`ToolsNotSupportedError` (raised when a model rejects native tool
 calling so the reply engine can fall back to text-based), and
 :func:`extract_text_from_response` (normalises content across known
@@ -30,7 +31,9 @@ import requests  # noqa: F401  — re-exported for test patching, see module doc
 
 from .backend import LLMBackend, ToolsNotSupportedError
 from .ollama import OllamaBackend, check_version, extract_text_from_response
-from .openai_compatible import OpenAICompatibleBackend, ServerCapabilities
+from .backend import ServerCapabilities
+from .gemini import GeminiBackend
+from .openai_compatible import OpenAICompatibleBackend
 from .factory import get_embedding_backend, get_llm_backend
 from .tiers import Tier, resolve_model
 
@@ -38,6 +41,7 @@ __all__ = [
     "LLMBackend",
     "OllamaBackend",
     "OpenAICompatibleBackend",
+    "GeminiBackend",
     "ServerCapabilities",
     "Tier",
     "ToolsNotSupportedError",

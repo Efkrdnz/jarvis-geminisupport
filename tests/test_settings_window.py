@@ -148,11 +148,24 @@ class TestLLMProviderFields:
 
     def test_llm_provider_choices_match_config(self):
         """The provider dropdown offers exactly the values the config loader
-        accepts ('ollama', 'openai_compatible')."""
+        accepts ('ollama', 'openai_compatible', 'gemini')."""
         fm = self._field("llm_provider")
         assert fm is not None and fm.field_type == "choice"
         values = {v for v, _ in (fm.choices or [])}
-        assert values == {"ollama", "openai_compatible"}
+        assert values == {"ollama", "openai_compatible", "gemini"}
+
+    def test_gemini_fields_live_on_the_provider_page(self):
+        for key in ("gemini_api_key", "gemini_base_url", "gemini_chat_model",
+                    "gemini_fast_model", "gemini_embed_model"):
+            fm = self._field(key)
+            assert fm is not None and fm.category == "llm_provider", (
+                f"'{key}' should be in the 'llm_provider' category"
+            )
+        assert self._field("gemini_api_key").field_type == "password"
+
+    def test_embedding_provider_offers_gemini(self):
+        fm = self._field("embedding_provider")
+        assert "gemini" in {v for v, _ in (fm.choices or [])}
 
     def test_embedding_provider_offers_inherit_option(self):
         """embedding_provider includes the empty 'same as chat provider'

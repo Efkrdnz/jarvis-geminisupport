@@ -9,7 +9,7 @@ from desktop_app import setup_wizard as ui
 
 
 @pytest.mark.parametrize("page_type", [
-    ui.OpenAICompatiblePage, ui.ModelsPage, ui.ProviderChoicePage,
+    ui.OpenAICompatiblePage, ui.GeminiPage, ui.ModelsPage, ui.ProviderChoicePage,
     ui.DictationPage, ui.SearchProvidersPage,
     ui.WelcomePage, ui.OllamaInstallPage, ui.OllamaServerPage,
     ui.WhisperSetupPage, ui.LocationPage, ui.MCPPage, ui.CompletePage,

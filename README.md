@@ -40,7 +40,7 @@ Your conversation memory stays on your computer. Separate local databases keep t
 | Windows · x64 | `Jarvis-Windows-x64.zip` | Extract, then run `Jarvis.exe` |
 | Linux · x64 | `Jarvis-Linux-x64.tar.gz` | Extract, then run `./Jarvis/Jarvis` |
 
-**2. Choose your local models.** The setup wizard guides you through speech recognition and a model server. Use [Ollama](https://ollama.com/download), or connect an OpenAI-compatible server you already run, such as LM Studio, oMLX or llama.cpp.
+**2. Choose your local models.** The setup wizard guides you through speech recognition and a model server. Use [Ollama](https://ollama.com/download), or connect an OpenAI-compatible server you already run, such as LM Studio, oMLX or llama.cpp. No GPU? You can opt in to [Google Gemini](docs/CONFIGURATION.md) with your own API key instead; your conversations are then sent to Google.
 
 **3. Make it yours.** Allow microphone access and let the first model downloads finish. When Jarvis reports that it is listening, try:
 
@@ -143,6 +143,7 @@ Jarvis is actively developed, primarily on macOS. Windows and Linux behaviour ma
 - **Apple Silicon desktop bundles include MLX speech recognition.** Windows, Linux and Intel Mac builds use faster-whisper.
 - **CUDA speech failures use a CPU fallback.** If the CUDA runtime fails during decoding, Jarvis makes one recovery attempt on CPU. Speech recognition can be slower in this mode.
 - **Whisper turbo needs a compatible backend.** The wizard hides it when the selected backend cannot load it; an existing unsupported selection uses `medium` instead.
+- **Google Gemini is a cloud service.** Choosing the Gemini provider sends your conversations, recalled memory and tool results to Google. It needs an internet connection and is subject to your key's rate limits. Speech recognition, voice output and stored memory stay local.
 - **Optional capabilities need their dependencies.** Location awareness needs a GeoLite2 database. Semantic memory search needs working embeddings; otherwise search falls back to keywords.
 
 ## Configuration
@@ -268,6 +269,7 @@ Local AI is the default, not a paid upgrade. No cloud AI service is required.
 - **Conversation memory:** stored locally under `~/.local/share/jarvis`.
 - **Sensitive information:** redacted before model context and saved diary entries. The in-memory chat still shows what you typed.
 - **Network boundaries:** model downloads, web tools and enabled integrations can make network requests. An external model endpoint receives the requests you send to it.
+- **Google Gemini (opt-in):** when chosen as the provider, everything sent to the model goes to Google under your API key. Ollama remains the default.
 
 <details>
 <summary><strong>Reduce optional network access</strong></summary>

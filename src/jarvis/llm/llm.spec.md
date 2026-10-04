@@ -1,11 +1,11 @@
 # LLM Backend Specification
 
-The `jarvis.llm` package owns every LLM HTTP call Jarvis makes and lets the same reply engine, planner, intent judge, evaluator, memory pipeline, and tools run against any local runtime: Ollama, an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's `llama-server`, vLLM, LocalAI), or an Anthropic-compatible server.
+The `jarvis.llm` package owns every LLM HTTP call Jarvis makes and lets the same reply engine, planner, intent judge, evaluator, memory pipeline, and tools run against any local runtime: Ollama, an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's `llama-server`, vLLM, LocalAI), or an Anthropic-compatible server. Google Gemini is the one cloud provider: an explicit opt-in (`llm_provider: "gemini"` plus the user's own API key) that is never a default.
 
 ## Goals
 
 1. **Pluggable.** New backends drop in by subclassing `LLMBackend` and being registered in `factory.get_llm_backend`. Call sites stay unchanged.
-2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL. Defaults remain `127.0.0.1:11434`.
+2. **Privacy-first.** Backends never send data anywhere unless the user has explicitly configured the URL or chosen the Gemini provider. Defaults remain `127.0.0.1:11434`.
 3. **Single source of truth.** Every call site dispatches through `get_llm_backend(cfg)` / `get_embedding_backend(cfg)`. The `Settings` object carries provider, base URL, API key, and model fields; the factory reads them.
 
 ## Public surface
@@ -15,6 +15,8 @@ from jarvis.llm import (
     LLMBackend,                  # provider-agnostic ABC
     OllamaBackend,               # implementation: Ollama
     OpenAICompatibleBackend,     # implementation: OpenAI-compatible servers
+    GeminiBackend,               # implementation: Google Gemini (native API)
+    ServerCapabilities,          # result of LLMBackend.check_capabilities
     ToolsNotSupportedError,
     get_llm_backend,             # factory: settings → chat backend
     get_embedding_backend,       # factory: settings → embedding backend
@@ -40,7 +42,8 @@ Two interchangeable styles dispatch to the same backend:
 | `chat(model, messages, *, timeout_sec, extra_options, tools, thinking)` | `Optional[Dict]` | Arbitrary messages array. Returns the raw response dict so callers (today: the reply engine) can inspect `content` and `tool_calls`. Raises `ToolsNotSupportedError` when the model rejects native tools. Re-raises `requests.ConnectionError` so callers can distinguish "server unreachable" from a transient HTTP failure. |
 | `embed(text, model, *, timeout_sec)` | `Optional[List[float]]` | Vector embedding. Returns `None` on error or when the runtime does not expose embeddings. |
 | `list_models(*, timeout_sec)` | `List[str]` | Names of models the runtime has available. Returns `[]` on error. |
-| `warm_up(model, *, timeout_sec, keep_alive)` | `bool` | Pre-load probe before the first real request. The `LLMBackend` default returns `True` (no-op for runtimes without a useful probe). `OllamaBackend` verifies the server is Ollama via `GET /api/version`, then issues a minimal `/api/chat` completion with the caller-provided `keep_alive` duration (default `"30m"`, `"1m"` in low-power mode) to page the model into resident memory **and** trigger full inference-pipeline initialisation (JIT compilation, KV-cache allocation) — the chat-endpoint warmup prevents the timeout that an empty `/api/generate` ping would mask on the first real call. `OpenAICompatibleBackend` first runs a fast reachability check (`GET /models`, 25 % of budget, max 5 s), then sends a single-token chat completion (`max_tokens=1`) to force the runtime to load the model into memory. |
+| `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` | `ServerCapabilities` | Implemented once on the ABC over `list_models` / `chat` / `embed`, so every backend reports the same flags. See the OpenAI-compatible section for the probe contract. |
+| `warm_up(model, *, timeout_sec, keep_alive)` | `bool` | Pre-load probe before the first real request. The `LLMBackend` default returns `True` (no-op for runtimes without a useful probe). `OllamaBackend` verifies the server is Ollama via `GET /api/version`, then issues a minimal `/api/chat` completion with the caller-provided `keep_alive` duration (default `"30m"`, `"1m"` in low-power mode) to page the model into resident memory **and** trigger full inference-pipeline initialisation (JIT compilation, KV-cache allocation) — the chat-endpoint warmup prevents the timeout that an empty `/api/generate` ping would mask on the first real call. `OpenAICompatibleBackend` first runs a fast reachability check (`GET /models`, 25 % of budget, max 5 s), then sends a single-token chat completion (`max_tokens=1`) to force the runtime to load the model into memory. `GeminiBackend` issues a metadata lookup (`GET models/{model}`) that opens the pooled HTTPS connection and validates the key and model without spending generation. |
 
 `direct()` and `streaming()` are convenience methods over `chat()`: they construct the `[system, user]` messages array internally so callers running classification-shaped passes (planner, intent judge, evaluator, enrichment extractor) do not have to. `chat()` is the low-level primitive for arbitrary message arrays — multi-turn dialogue, native tool calls, and anything that needs custom roles.
 
@@ -64,17 +67,22 @@ Provider-aware fields in `Settings` (see [src/jarvis/config.py](../config.py)):
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `llm_provider` | `"ollama"` | `"ollama"` or `"openai_compatible"`. Unknown values fall back to `"ollama"`. |
+| `llm_provider` | `"ollama"` | `"ollama"`, `"openai_compatible"` or `"gemini"`. Unknown values fall back to `"ollama"`. |
 | `llm_base_url` | (OpenAI-compatible only) | The OpenAI-compatible server's URL, e.g. `http://localhost:1234/v1` (LM Studio default). Read only when `llm_provider == openai_compatible`; the Ollama path always uses `ollama_base_url`. |
 | `llm_api_key` | `""` | Optional bearer token. Sent only when non-empty. |
 | `llm_chat_model` | (OpenAI-compatible only) | The model name the OpenAI-compatible server exposes. Read only when `llm_provider == openai_compatible` (falling back to `ollama_chat_model` if blank); the Ollama path uses `ollama_chat_model`. |
-| `embedding_provider` | inherits `llm_provider` | `"ollama"` / `"openai_compatible"`. Override for runtimes without embeddings. |
+| `embedding_provider` | inherits `llm_provider` | `"ollama"` / `"openai_compatible"` / `"gemini"`. Override for runtimes without embeddings, or to keep embeddings local while chat uses Gemini. |
 | `embedding_base_url` | inherits from llm config | Override per-provider URL. |
 | `embedding_api_key` | inherits `llm_api_key` | Override per-provider key. |
 | `embedding_model` | (OpenAI-compatible only) | The OpenAI-compatible embedding model. Read only when the effective embedding provider is `openai_compatible` (falling back to `ollama_embed_model` if blank); the Ollama path uses `ollama_embed_model`. |
+| `gemini_api_key` | `""` | Google Gemini API key. When empty, `_load_settings` reads `GEMINI_API_KEY` then `GOOGLE_API_KEY` from the environment. Sent as the `x-goog-api-key` header, never in a URL. Also the embedding key when embeddings run on Gemini and `embedding_api_key` is empty. |
+| `gemini_base_url` | `""` | Override for the Gemini endpoint (a proxy or gateway). Empty means `https://generativelanguage.googleapis.com/v1beta`. Read only on the Gemini path, so OpenAI-compatible URLs never leak into it. |
+| `gemini_chat_model` | `""` → `DEFAULT_GEMINI_CHAT_MODEL` (`gemini-flash-latest`) | Gemini chat model; resolves into `llm_chat_model` on the Gemini path. |
+| `gemini_fast_model` | `""` → `DEFAULT_GEMINI_FAST_MODEL` (`gemini-flash-lite-latest`) | Gemini fast-tier model; resolves into `fast_model` on the Gemini path. The shared `fast_model` key is ignored there so an Ollama pull-name never reaches Google. |
+| `gemini_embed_model` | `""` → `DEFAULT_GEMINI_EMBED_MODEL` (`gemini-embedding-001`) | Gemini embedding model; resolves into `embedding_model` when the effective embedding provider is Gemini. |
 | `low_power_mode` | `false` | When enabled, voice startup skips LLM warmup and Ollama keep-alive windows used by warmup and the intent judge are short. |
 
-The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned).
+The `ollama_base_url` / `ollama_chat_model` / `ollama_embed_model` keys hold the Ollama configuration and are authoritative whenever the active (chat or embedding) provider is Ollama. `_load_settings` resolves `cfg.llm_chat_model`, `cfg.embedding_model`, and `cfg.fast_model` per-provider — the Ollama keys win on the Ollama path, the provider-aware keys win on the OpenAI-compatible path — so the codebase reads a single resolved field while each provider keeps its own on-disk model name. On the Gemini path the `gemini_*_model` keys win in the same way, falling back to the `DEFAULT_GEMINI_*` models rather than to any Ollama or OpenAI-compatible name. The v1 → v2 migration promotes any explicitly-set `ollama_*` values into the provider-aware keys; per-provider resolution means a promoted value never shadows the Ollama picker. The v2 → v3 migration folds the retired per-context model keys (`intent_judge_model`, `tool_router_model`, `evaluator_model`, `planner_model`) into `fast_model` (an explicitly chosen judge or router model is kept; the old default value is not pinned).
 
 ### Model tiers
 
@@ -82,15 +90,15 @@ Every LLM context runs on one of two models, resolved through `resolve_model(cfg
 
 | Tier | Field | Contexts | Default |
 |------|-------|----------|---------|
-| `Tier.FAST` | `cfg.fast_model` | intent judge, tool router, tool searcher, enrichment extractor, graph placement, max-turn digest, evaluator | `gemma4:e2b` on the Ollama chat path; the active chat model on an OpenAI-compatible provider (the Ollama pull-name does not exist there) |
-| `Tier.CHAT` | `cfg.llm_chat_model` | main reply loop, planner + plan-step resolver, summariser, graph extraction, tool-specific calls, memory/tool-result digests (size-gated passes on the chat model) | the model picked at setup |
+| `Tier.FAST` | `cfg.fast_model` | intent judge, tool router, tool searcher, enrichment extractor, graph placement, max-turn digest, evaluator | `gemma4:e2b` on the Ollama chat path; the active chat model on an OpenAI-compatible provider (the Ollama pull-name does not exist there); `gemini_fast_model` (default `gemini-flash-lite-latest`) on Gemini |
+| `Tier.CHAT` | `cfg.llm_chat_model` | main reply loop, planner + plan-step resolver, summariser, graph extraction, tool-specific calls, memory/tool-result digests (size-gated passes on the chat model) | the model picked at setup (`gemini_chat_model`, default `gemini-flash-latest`, on Gemini) |
 
 Fast-tier contexts take a few thousand tokens in and emit tiny strict-JSON answers, so latency dominates; chat-tier contexts produce long-form output, so quality dominates. Contexts state their tier instead of defining a per-context fallback chain, and any future routing logic lands in exactly one place.
 
 ### Factory dispatch
 
-- `get_llm_backend(cfg)` reads `llm_provider`. For `openai_compatible` it resolves `llm_base_url` (falling back to `ollama_base_url`); for `ollama` it uses `ollama_base_url` directly so a stale `llm_base_url` from a previous OpenAI-compatible config cannot leak into the Ollama backend. `llm_api_key` is read regardless (sent only when non-empty).
-- `get_embedding_backend(cfg)` reads `embedding_provider` (falls back to `llm_provider` when unset), resolves `embedding_base_url` (falls back per-provider: `llm_base_url` for OpenAI-compatible, `ollama_base_url` for Ollama), and `embedding_api_key` (falls back to `llm_api_key`).
+- `get_llm_backend(cfg)` reads `llm_provider`. For `openai_compatible` it resolves `llm_base_url` (falling back to `ollama_base_url`); for `ollama` it uses `ollama_base_url` directly so a stale `llm_base_url` from a previous OpenAI-compatible config cannot leak into the Ollama backend. `llm_api_key` is read regardless (sent only when non-empty). For `gemini` it builds `GeminiBackend(gemini_base_url or the official endpoint, gemini_api_key)`.
+- `get_embedding_backend(cfg)` reads `embedding_provider` (falls back to `llm_provider` when unset), resolves `embedding_base_url` (falls back per-provider: `llm_base_url` for OpenAI-compatible, `ollama_base_url` for Ollama, `gemini_base_url` or the official endpoint for Gemini), and `embedding_api_key` (falls back to `llm_api_key`, or to `gemini_api_key` on the Gemini path).
 - Construction is fail-soft: an unset URL becomes the default Ollama URL, so `get_*_backend` never raises. Errors surface at request time, not construction time.
 
 ### v1 → v2 config migration
@@ -123,7 +131,23 @@ The migration in `_migrate_config` runs once when `_config_version < 2`:
 - `warm_up(model)` is a two-phase probe: it first issues ``GET /models`` as a fast reachability check (capped at 25 % of the budget, max 5 s), then sends a minimal chat completion (``max_tokens=1``, ``content: "ping"``) to force the runtime to load the model into memory. Without the inference phase, an OpenAI-compatible server may keep the model in a cold state until the first real user request, incurring latency on the first query. The fallback stance remains: a failed warmup is informational and never blocks operation.
 - Authentication: `Authorization: Bearer <api_key>` header sent only when `api_key` is non-empty.
 - Error logs do not echo URLs or API keys: HTTP errors print only the status code, generic exceptions print only the class name, connection errors print a fixed string and re-raise so callers can apply their own back-off.
-- `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
+- `check_capabilities(chat_model, embed_model=None, *, timeout_sec)` (defined on `LLMBackend`, so Gemini shares it) returns a `ServerCapabilities` dataclass (`reachable`, `chat`, `tools`, `embeddings`, `models`). It probes with real requests — `list_models`, a one-message chat, a trivial tool call, and an embedding — and never raises (every failure collapses to a `False` flag). `chat` is True for either a text reply or a tool-call-only reply. Used by the setup wizard and the desktop startup check to report honestly what a server+model can do before the user relies on it. The probe issues real inference, so it is recorded in `docs/llm_contexts.md`.
+
+### Google Gemini (`GeminiBackend`)
+
+Speaks Gemini's native REST API rather than its OpenAI-compatibility shim, because thought signatures and thinking control only work reliably there.
+
+- Endpoints: `POST models/{model}:generateContent`, `POST models/{model}:streamGenerateContent?alt=sse`, `POST models/{model}:embedContent`, `GET models` (paginated via `pageToken`), `GET models/{model}` (warm-up).
+- Authentication: `x-goog-api-key` header. The key never appears in a URL or in printed output. Gemini reports an invalid key as HTTP 400 with an `API_KEY_*` `ErrorInfo.reason`; that (and 401/403) is classified as `GeminiAuthError` before any shape-based fallback, so a bad key never triggers thinking retries or a `ToolsNotSupportedError`, and `chat()` prints a key-specific hint.
+- Connection reuse: one process-wide pooled `requests.Session`, so consecutive calls skip the TCP + TLS handshake (the factory builds a fresh backend per call, so per-instance pooling would not help).
+- Message translation: leading `system` messages become `systemInstruction`; later ones stay in order as user-turn text. Assistant `tool_calls` become `functionCall` parts and `tool` messages become `functionResponse` parts (`{"result": <content>}`) on a user turn, paired by `tool_call_id`. Calls without a matching result are dropped because Gemini rejects a call/response count mismatch. Consecutive same-role turns are merged. Engine-internal message fields never reach the wire.
+- Thought signatures: each `functionCall` part's `thoughtSignature` is carried on the normalised tool call as `thought_signature` (the engine stores `tool_calls` verbatim) and restored on the next request. A call without one (history from an earlier reply or another provider) gets the documented `skip_thought_signature_validator` sentinel on the first call of its turn.
+- Tools: `functionDeclarations` with the tool's JSON schema passed unchanged as `parametersJsonSchema`.
+- Thinking: `thinking=False` sends the cheapest control the model accepts, tried in order: `thinkingLevel` `minimal` → `low` → none for current models and `-latest` aliases; `thinkingBudget` `0` → `128` → none for budget-era `gemini-1.*` / `gemini-2.*` models. An HTTP 400 moves to the next candidate within the same call, and the candidate that succeeded is remembered per `(base_url, model, thinking)` for the process, so the negotiation costs at most a couple of extra round-trips once per model. `thinking=True` sends no control (the model's default). Thought parts are never returned as content.
+- `extra_options`: `temperature` → `temperature`, `max_tokens` → `maxOutputTokens`, `top_p` → `topP`, `top_k` → `topK`, `seed`, `stop` → `stopSequences`, `format` → `responseMimeType: application/json` (a schema dict also sets `responseJsonSchema`). Ollama-only knobs (`keep_alive`, `num_ctx`, `num_predict`, `think`) are dropped.
+- Embeddings: requests `outputDimensionality = MEMORY_EMBEDDING_DIMENSION` (the memory index width, `jarvis.utils.vector_store`) so Gemini vectors fit the same index as local ones.
+- Responses normalise to `{"message": {"role", "content", "tool_calls"}, "done_reason"}` with tool-call arguments as dicts and an id on every call. No candidates (e.g. a safety block) returns `None` from `chat()` / `direct()`.
+- Failure handling follows the shared contract: timeouts and HTTP errors return `None` (HTTP 429 prints a rate-limit line), HTTP 400 with `tools` raises `ToolsNotSupportedError` once thinking candidates are exhausted, and `requests.ConnectionError` is re-raised from `chat()`.
 
 ## Module-local LLM wrappers
 
@@ -138,7 +162,7 @@ Each migrated module exposes a single intercept point so tests can patch one sym
 - `jarvis.tools.builtin.nutrition.log_meal.call_llm_direct(*, cfg, chat_model, ...)` — nutrition extractor + follow-up generator.
 - `jarvis.tools.builtin.weather.get_llm_backend` — hoisted to module scope so the place extractor's backend lookup is patchable.
 
-A factory-dispatch wiring guard at `tests/test_factory_dispatch_wiring.py` parametrises across each migrated module and asserts the wrapper actually constructs `OpenAICompatibleBackend` for `llm_provider: openai_compatible` and `OllamaBackend` for `ollama`. A regression that drops `get_llm_backend(cfg)` from a wrapper would bypass every unit test but trip this guard.
+A factory-dispatch wiring guard at `tests/test_factory_dispatch_wiring.py` parametrises across each migrated module and asserts the wrapper actually constructs `OpenAICompatibleBackend` for `llm_provider: openai_compatible`, `GeminiBackend` for `gemini` and `OllamaBackend` for `ollama`. A regression that drops `get_llm_backend(cfg)` from a wrapper would bypass every unit test but trip this guard.
 
 `import requests` is re-exported from the package `__init__.py` so tests that patch `jarvis.llm.requests.post` keep working without reaching into the per-backend modules.
 
@@ -147,9 +171,10 @@ A factory-dispatch wiring guard at `tests/test_factory_dispatch_wiring.py` param
 ```
 src/jarvis/llm/
 ├── __init__.py             # public re-exports + function-style helpers
-├── backend.py              # LLMBackend ABC + ToolsNotSupportedError
+├── backend.py              # LLMBackend ABC + ServerCapabilities + ToolsNotSupportedError
 ├── ollama.py               # OllamaBackend + extract_text_from_response
 ├── openai_compatible.py    # OpenAICompatibleBackend + _normalise_response
+├── gemini.py               # GeminiBackend (native Gemini API)
 ├── factory.py              # get_llm_backend(cfg) + get_embedding_backend(cfg)
 └── llm.spec.md             # this file
 ```

@@ -10,7 +10,7 @@ The setup wizard is shown only when **user action is required** — it is not sh
 2. Ollama server is running but required models are missing.
 3. Ollama auto-start timed out (server still unreachable).
 
-An OpenAI-compatible user has opted out of the local Ollama stack, so `should_show_setup_wizard()` returns `False` for them regardless of Ollama state. They can still open the wizard manually from the tray to switch providers.
+An OpenAI-compatible user has opted out of the local Ollama stack, so `should_show_setup_wizard()` returns `False` for them regardless of Ollama state. A Gemini user is treated the same way except that the wizard is shown while no Gemini API key is available (neither `gemini_api_key` nor the `GEMINI_API_KEY` / `GOOGLE_API_KEY` environment), since nothing works without one. They can still open the wizard manually from the tray to switch providers.
 
 ## Design Principles
 
@@ -42,20 +42,22 @@ page transitions and model installation do not force a larger window.
 
 ```
 Whisper Setup (start) → Provider Choice ─┬─ Ollama → Welcome/Status → [Ollama Install] → [Ollama Server] → Models ─┐
-                                          └─ OpenAI-compat → OpenAI-compatible config ───────────────────────────────────────┤
+                                          ├─ OpenAI-compat → OpenAI-compatible config ───────────────────────────────────────┤
+                                          └─ Gemini → Gemini API key & models ───────────────────────────────────────────────┤
                                                                                                                               ▼
                                             Dictation → MCP Servers → Search Providers → [Location] → Complete
 ```
 
-**Whisper Setup** is the first step (`setStartId`), so its model choice informs the later memory budget. **Provider Choice** then branches: the Ollama path goes through the Welcome/Status dashboard and install/server/models; the OpenAI-compatible path uses a connection and model page. Pages in brackets are conditional, skipped when their prerequisite is already satisfied.
+**Whisper Setup** is the first step (`setStartId`), so its model choice informs the later memory budget. **Provider Choice** then branches: the Ollama path goes through the Welcome/Status dashboard and install/server/models; the OpenAI-compatible path uses a connection and model page; the Gemini path uses an API key and model page. Pages in brackets are conditional, skipped when their prerequisite is already satisfied.
 
 ### Pages
 
 | # | Page | Condition to show | Config written |
 |---|------|-------------------|----------------|
 | 1 | **Whisper Setup** (start) | Always | `whisper_model` |
-| 2 | **Provider Choice** | Always | `llm_provider` (Ollama clears the OpenAI-compatible overrides) |
+| 2 | **Provider Choice** | Always | `llm_provider` (Ollama clears the OpenAI-compatible and Gemini overrides) |
 | 3 | **OpenAI-compatible** | Provider Choice = OpenAI-compatible | `llm_provider`, `llm_base_url`, `llm_chat_model`, `llm_api_key`?, `embedding_model`?, `embedding_provider` (set to `ollama` when the embeddings-fallback box is ticked, else cleared), `fast_model` |
+| 3b | **Gemini** | Provider Choice = Gemini | `llm_provider`, `gemini_api_key`?, `gemini_chat_model`?, `gemini_fast_model`?, `gemini_embed_model`? (written only when they differ from the defaults); clears `embedding_*` so embeddings follow Gemini |
 | 4 | **Welcome / Status** | Ollama path | — |
 | 5 | **Ollama Install** | Ollama path + CLI not found | — |
 | 6 | **Ollama Server** | Ollama path + server not running | — |
@@ -70,7 +72,7 @@ Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 
 ### Page Details
 
-**ProviderChoicePage** — Two cards (radio buttons in a shared `QButtonGroup` so they are mutually exclusive across the separate card frames): Ollama (recommended) and OpenAI-compatible server. The copy makes clear both options are local: the OpenAI-compatible card describes pointing at another local app (LM Studio, oMLX, llama.cpp, vLLM, LocalAI) on your own machine or network, not a cloud service. Preselects from the current `llm_provider`. On validate, writes `llm_provider`; selecting Ollama omits the key and clears the OpenAI-compatible overrides (`llm_base_url`, `llm_api_key`, `llm_chat_model`, `embedding_*`) so the Ollama settings become authoritative again. `nextId` routes to the selected provider path.
+**ProviderChoicePage** — Three stacked cards (radio buttons in a shared `QButtonGroup` so they are mutually exclusive across the separate card frames): Ollama (recommended), OpenAI-compatible server, and Google Gemini (cloud). The copy makes clear the first two are local: the OpenAI-compatible card describes pointing at another local app (LM Studio, oMLX, llama.cpp, vLLM, LocalAI) on your own machine or network, not a cloud service. The Gemini card states plainly that conversations are sent to Google's cloud. Cards stack vertically because three side-by-side cards do not fit the minimum wizard width. Preselects from the current `llm_provider`. On validate, writes `llm_provider`; selecting Ollama omits the key and clears the remote-provider overrides (`llm_base_url`, `llm_api_key`, `llm_chat_model`, `embedding_*`, `gemini_*`) so the Ollama settings become authoritative again. `nextId` routes to the selected provider path.
 
 **WelcomePage / Status** — Reached only on the Ollama branch. Status dashboard showing CLI, server, models, location, and MLX Whisper (Apple Silicon) readiness; a background `StatusCheckWorker` populates `wizard.ollama_status`. Leads into the first applicable Ollama page via `SetupWizard.ollama_entry_page_id()` (install if the CLI is missing, server if it is not running, else models).
 
@@ -83,6 +85,8 @@ Fields suffixed `?` are written only when non-empty (minimal-config invariant).
 - **Memory budget.** A compact summary opens editable GB estimates for the chat, distinct fast, and embedding models. Known model IDs prefill their estimates; unknown IDs remain unknown until the user enters a value. A manual estimate is retained while comparing models. Shared chat/fast models count once. The Ollama-embeddings fallback uses the configured Ollama model and endpoint. Loopback workloads show a combined model and Whisper estimate with a detected-GPU comparison when available. Network workloads have separate figures and are not compared to the local GPU. Estimates guide selection and are not written to runtime config.
 
 `isComplete` gates Next on base URL + chat model. On validate, writes `llm_provider="openai_compatible"`, `llm_base_url`, `llm_chat_model` (the combo's current text), and the optional `llm_api_key` / `embedding_model` only when non-empty. When the Ollama-embeddings checkbox is shown and ticked, writes `embedding_provider="ollama"` and drops `embedding_model` (Ollama's default applies); otherwise `embedding_provider` is cleared. `nextId` skips the Ollama install/server/models pages and goes to Dictation.
+
+**GeminiPage** — Shown only on the Gemini path. The common case is "paste key, Next": a password-masked API key field (prefilled from config), a **Get a free API key** button that opens Google AI Studio, and editable chat / fast / embedding model dropdowns prefilled with the `DEFAULT_GEMINI_*` models (or saved values). **Check key & load models** runs `_GeminiCheckWorker` → `GeminiBackend.check_capabilities` off the UI thread, adds the models the key can use to the chat and fast dropdowns, and reports `✅ Chat ✅ Tool calling ✅ Embeddings` or a clear rejected-key message. A key found in `GEMINI_API_KEY` / `GOOGLE_API_KEY` counts as entered (the field shows a placeholder saying so) and is not copied into `config.json`. `isComplete` gates Next on an effective key and a chat model. `nextId` goes to Dictation.
 
 **OllamaInstallPage** — Platform-specific download instructions. Opens official download page. Verify button re-checks `check_ollama_cli()`.
 

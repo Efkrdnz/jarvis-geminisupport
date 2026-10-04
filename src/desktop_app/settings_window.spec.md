@@ -67,12 +67,17 @@ The settings window uses a sidebar navigation pattern: a fixed-width `QListWidge
 
 ### LLM Provider
 
-Selects the local runtime that serves the LLM and holds the provider-aware
-connection fields: `llm_provider` (Ollama / OpenAI-compatible), `llm_base_url`,
+Selects what serves the LLM and holds the provider-aware
+connection fields: `llm_provider` (Ollama / OpenAI-compatible / Google Gemini), `llm_base_url`,
 `llm_api_key` (password), `llm_chat_model`, and the four `embedding_*` fields
 (`embedding_provider`, `embedding_base_url`, `embedding_api_key`,
 `embedding_model`). The model fields are free-text `str` — an OpenAI-compatible
 server's model name is not in the Ollama `SUPPORTED_CHAT_MODELS` catalogue.
+The Gemini fields live on the same page: `gemini_api_key` (password),
+`gemini_chat_model`, `gemini_fast_model`, `gemini_embed_model` and
+`gemini_base_url`, all nullable (empty means the Gemini defaults, the
+environment key and Google's endpoint). `embedding_provider` also offers
+Gemini.
 
 Every connection/credential/model field is nullable: leaving it empty falls
 back to the Ollama settings on the "LLM & AI Models" page. A default Ollama

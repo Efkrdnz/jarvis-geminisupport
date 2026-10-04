@@ -59,6 +59,31 @@ Leave `embedding_provider` empty to use the same provider as chat. With no worki
 </details>
 
 <details>
+<summary><strong>Google Gemini (optional cloud provider)</strong></summary>
+
+If you would rather not run a model locally, Jarvis can use Google's Gemini API with your own API key. This is the one option where your conversations leave your computer: the text you send (including recalled memory and tool results in the prompt) goes to Google. Speech recognition, voice output and the memory database stay on your machine.
+
+1. Create a key at [Google AI Studio](https://aistudio.google.com/apikey).
+2. In the Setup Wizard pick **✨ Google Gemini (cloud)**, paste the key and press **Check key & load models**, or set it under **⚙️ Settings → 🔌 LLM Provider**.
+
+```json
+{
+  "llm_provider": "gemini",
+  "gemini_api_key": "AIza..."
+}
+```
+
+- `gemini_api_key`: leave empty to use the `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) environment variable instead.
+- `gemini_chat_model` (optional): defaults to `gemini-flash-latest`, which tracks Google's current Flash model.
+- `gemini_fast_model` (optional): the voice-intent and tool-routing model, default `gemini-flash-lite-latest` for the lowest latency.
+- `gemini_embed_model` (optional): memory embeddings, default `gemini-embedding-001`. Set `"embedding_provider": "ollama"` to keep embeddings local instead.
+- `gemini_base_url` (optional): an alternative endpoint such as a proxy.
+
+All features (tools, planning, memory, digests, intent detection) work the same as on a local model. Jarvis keeps Gemini fast by turning model "thinking" down to its minimum for quick classification passes, reusing one HTTPS connection, and warming the connection at startup without spending tokens. Turn **Chat Thinking Mode** on in Settings to let the chat model reason more deeply at the cost of latency.
+
+</details>
+
+<details>
 <summary><strong>Power and Startup</strong></summary>
 
 Jarvis favours fast first responses by default: it warms Whisper, the chat

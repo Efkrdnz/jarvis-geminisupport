@@ -98,6 +98,7 @@ hiddenimports = [
     'jarvis.config',
     'jarvis.debug',
     'jarvis.llm',
+    'jarvis.llm.gemini',
     'jarvis.main',
     # Desktop app modules
     'desktop_app',

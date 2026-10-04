@@ -3047,33 +3047,38 @@ class JarvisSystemTray:
         return self.app.exec()
 
 
+# Providers that run outside the local Ollama server.
+_REMOTE_PROVIDERS = ("openai_compatible", "gemini")
+
+
 def _ollama_runtime_flags(cfg) -> tuple[bool, bool]:
     """Decide how much of the Ollama startup flow applies given the active
     providers.
 
     Returns ``(ollama_needed, chat_on_ollama)``:
     - ``ollama_needed`` — the local Ollama server must be up because chat
-      and/or embeddings run on it. False only for a pure OpenAI-compatible
-      setup (both chat and embeddings remote), where there is nothing local
-      to start or verify.
+      and/or embeddings run on it. False when both chat and embeddings run
+      on remote providers (OpenAI-compatible server and/or Gemini), where
+      there is nothing local to start or verify.
     - ``chat_on_ollama`` — the chat model is an Ollama model, so the
       chat-model verification / unsupported-model checks apply. False when
-      chat runs on an OpenAI-compatible server (its model name is not in the
-      Ollama catalogue and would be wrongly flagged as unsupported).
+      chat runs on a remote provider (its model name is not in the Ollama
+      catalogue and would be wrongly flagged as unsupported).
     """
     llm_provider = getattr(cfg, "llm_provider", "ollama") or "ollama"
     embed_provider = getattr(cfg, "embedding_provider", "") or llm_provider
     ollama_needed = not (
-        llm_provider == "openai_compatible" and embed_provider == "openai_compatible"
+        llm_provider in _REMOTE_PROVIDERS and embed_provider in _REMOTE_PROVIDERS
     )
-    chat_on_ollama = llm_provider != "openai_compatible"
+    chat_on_ollama = llm_provider not in _REMOTE_PROVIDERS
     return ollama_needed, chat_on_ollama
 
 
 def _check_openai_compat_reachable(cfg, timeout_sec: float = 4.0) -> bool:
-    """True when the configured OpenAI-compatible server answers its model
-    listing. Used at startup to warn the user early if their local server
-    isn't running, since (unlike Ollama) Jarvis cannot start it for them."""
+    """True when the configured remote chat provider (OpenAI-compatible
+    server or Gemini) answers its model listing. Used at startup to warn the
+    user early if it can't be reached (server down, bad Gemini key, offline),
+    since (unlike Ollama) Jarvis cannot start it for them."""
     try:
         from jarvis.llm import get_llm_backend
         return bool(get_llm_backend(cfg).list_models(timeout_sec=timeout_sec))
@@ -3084,6 +3089,14 @@ def _check_openai_compat_reachable(cfg, timeout_sec: float = 4.0) -> bool:
 def _build_unreachable_message(cfg) -> str:
     """Build the message text for the unreachable server dialog,
     without Qt dependencies so tests can verify it directly."""
+    if (getattr(cfg, "llm_provider", "") or "") == "gemini":
+        return (
+            "⚠️ Jarvis couldn't reach Google Gemini.\n\n"
+            "Check that your Gemini API key is valid and that this computer is "
+            "online, and Jarvis will connect automatically.\n\n"
+            "You can open the Setup Wizard to enter a new key, or close and "
+            "adjust Settings later via the tray menu \u2192 LLM Provider."
+        )
     base = (getattr(cfg, "llm_base_url", "") or "").strip() or "your configured server"
     return (
         f"⚠️ Jarvis couldn't reach a ready LLM server at {base}.\n\n"
@@ -3446,7 +3459,8 @@ def main() -> int:
             _ollama_needed, _chat_on_ollama = True, True
 
         if not _ollama_needed:
-            print("🔌 OpenAI-compatible provider configured: skipping Ollama startup checks", flush=True)
+            _remote = getattr(_provider_cfg, "llm_provider", "remote")
+            print(f"🔌 Remote LLM provider '{_remote}' configured: skipping Ollama startup checks", flush=True)
 
             # We can't start a third-party server the way we start Ollama, so
             # check it is reachable and warn early if it isn't — otherwise the

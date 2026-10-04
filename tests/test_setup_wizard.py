@@ -5,6 +5,7 @@ These tests verify the Ollama detection logic without touching the UI.
 They treat the detection functions as black boxes, verifying inputs produce correct outputs.
 """
 
+import json
 import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -241,6 +242,189 @@ class TestGetRequiredModels:
         with patch("desktop_app.setup_wizard.load_settings", return_value=cfg):
             models = get_required_models()
         assert models == ["gpt-oss:20b", "gemma4:e2b"]
+
+
+class TestRequiredModelsGemini:
+    """Gemini runs in Google's cloud, so only models that stay on Ollama are
+    required locally."""
+
+    def _cfg(self, **over):
+        from types import SimpleNamespace
+        base = dict(
+            llm_provider="gemini",
+            embedding_provider="",
+            ollama_chat_model="gemma4:e2b",
+            ollama_embed_model="nomic-embed-text",
+            fast_model="gemini-flash-lite-latest",
+            gemini_api_key="k",
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    def test_pure_gemini_requires_no_ollama_models(self):
+        with patch("desktop_app.setup_wizard.load_settings", return_value=self._cfg()):
+            assert get_required_models() == []
+
+    def test_gemini_chat_with_ollama_embeddings_requires_only_embed_model(self):
+        cfg = self._cfg(embedding_provider="ollama")
+        with patch("desktop_app.setup_wizard.load_settings", return_value=cfg):
+            assert get_required_models() == ["nomic-embed-text"]
+
+
+class TestShouldShowSetupWizardGemini:
+    def _missing_cli(self):
+        return OllamaStatus(is_cli_installed=False, is_server_running=False,
+                            missing_models=["gemma4:e2b"])
+
+    def test_gemini_with_key_never_needs_the_ollama_wizard(self):
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(llm_provider="gemini", gemini_api_key="k")
+        with patch("desktop_app.setup_wizard.load_settings", return_value=cfg), \
+             patch("desktop_app.setup_wizard.check_ollama_status", return_value=self._missing_cli()):
+            assert should_show_setup_wizard() is False
+
+    def test_gemini_without_key_needs_the_wizard(self):
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(llm_provider="gemini", gemini_api_key="")
+        with patch("desktop_app.setup_wizard.load_settings", return_value=cfg), \
+             patch("desktop_app.setup_wizard.check_ollama_status", return_value=self._missing_cli()):
+            assert should_show_setup_wizard() is True
+
+
+class TestGeminiWizardPages:
+    """Provider choice routes to the Gemini page, which persists a minimal
+    config: provider, key, and only the model names that differ from the
+    defaults."""
+
+    def _cfg_file(self, data=None):
+        import tempfile
+        from pathlib import Path
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        json.dump(data or {}, f)
+        f.close()
+        return Path(f.name)
+
+    def test_provider_choice_writes_gemini(self):
+        page = ProviderChoicePage.__new__(ProviderChoicePage)
+        cfg_path = self._cfg_file()
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page._selected = "gemini"
+                assert page.validatePage() is True
+            assert json.loads(cfg_path.read_text())["llm_provider"] == "gemini"
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_provider_choice_routes_gemini_to_its_page(self):
+        page = ProviderChoicePage.__new__(ProviderChoicePage)
+        page._selected = "gemini"
+        wizard = MagicMock()
+        wizard.gemini_page_id = 77
+        page.wizard = MagicMock(return_value=wizard)
+        with patch("desktop_app.setup_wizard.SetupWizard", MagicMock):
+            assert page.nextId() == 77
+
+    def test_choosing_ollama_clears_gemini_overrides(self):
+        page = ProviderChoicePage.__new__(ProviderChoicePage)
+        cfg_path = self._cfg_file({
+            "llm_provider": "gemini", "gemini_api_key": "k",
+            "gemini_chat_model": "x", "gemini_fast_model": "y",
+            "gemini_embed_model": "z", "gemini_base_url": "https://g/v1beta",
+        })
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page._selected = "ollama"
+                assert page.validatePage() is True
+            saved = json.loads(cfg_path.read_text())
+            assert saved.get("llm_provider", "ollama") == "ollama"
+            assert not any(k.startswith("gemini_") for k in saved)
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_preselects_gemini_from_existing_config(self, qapp):
+        cfg_path = self._cfg_file({"llm_provider": "gemini"})
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page = ProviderChoicePage()
+            assert page._selected == "gemini"
+            assert page._gemini_radio.isChecked()
+            assert not page._ollama_radio.isChecked() and not page._openai_radio.isChecked()
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_gemini_card_is_honest_about_the_cloud(self, qapp):
+        from PyQt6.QtWidgets import QLabel
+        cfg_path = self._cfg_file()
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page = ProviderChoicePage()
+            blob = " ".join(lbl.text().lower() for lbl in page.findChildren(QLabel))
+            assert "google" in blob and "cloud" in blob
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_gemini_page_requires_a_key(self, qapp, monkeypatch):
+        from desktop_app.setup_wizard import GeminiPage
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        cfg_path = self._cfg_file()
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page = GeminiPage()
+                page.initializePage()
+                assert page.isComplete() is False
+                page._api_key_input.setText("AIza-test")
+                assert page.isComplete() is True
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_gemini_page_writes_minimal_config(self, qapp, monkeypatch):
+        from desktop_app.setup_wizard import GeminiPage
+        from jarvis.config import DEFAULT_GEMINI_EMBED_MODEL, DEFAULT_GEMINI_FAST_MODEL
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        cfg_path = self._cfg_file({"embedding_provider": "openai_compatible"})
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page = GeminiPage()
+                page.initializePage()
+                page._api_key_input.setText("AIza-test")
+                page._chat_model_combo.setCurrentText("gemini-custom-pro")
+                page._fast_model_combo.setCurrentText(DEFAULT_GEMINI_FAST_MODEL)
+                page._embed_model_combo.setCurrentText(DEFAULT_GEMINI_EMBED_MODEL)
+                assert page.validatePage() is True
+            saved = json.loads(cfg_path.read_text())
+            assert saved["llm_provider"] == "gemini"
+            assert saved["gemini_api_key"] == "AIza-test"
+            assert saved["gemini_chat_model"] == "gemini-custom-pro"
+            assert "gemini_fast_model" not in saved, "defaults are not written"
+            assert "gemini_embed_model" not in saved
+            assert "embedding_provider" not in saved, "embeddings follow Gemini"
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_environment_key_is_used_but_not_copied_to_disk(self, qapp, monkeypatch):
+        from desktop_app.setup_wizard import GeminiPage
+        monkeypatch.setenv("GEMINI_API_KEY", "env-key")
+        cfg_path = self._cfg_file()
+        try:
+            with patch("jarvis.config.default_config_path", return_value=cfg_path):
+                page = GeminiPage()
+                page.initializePage()
+                assert page.isComplete() is True
+                assert page.validatePage() is True
+            assert "gemini_api_key" not in json.loads(cfg_path.read_text())
+        finally:
+            cfg_path.unlink(missing_ok=True)
+
+    def test_gemini_page_continues_to_dictation(self):
+        from desktop_app.setup_wizard import GeminiPage
+        page = GeminiPage.__new__(GeminiPage)
+        wizard = MagicMock()
+        wizard.dictation_page_id = 9
+        page.wizard = MagicMock(return_value=wizard)
+        with patch("desktop_app.setup_wizard.SetupWizard", MagicMock):
+            assert page.nextId() == 9
 
 
 class TestCheckInstalledModels:

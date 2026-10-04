@@ -84,6 +84,26 @@ class TestOllamaRuntimeFlags:
         assert needed is True
         assert chat_on_ollama is True
 
+    def test_pure_gemini_skips_ollama(self):
+        """Chat and embeddings on Gemini: nothing local to start or verify."""
+        needed, chat_on_ollama = self._flags(llm_provider="gemini", embedding_provider="")
+        assert needed is False
+        assert chat_on_ollama is False
+
+    def test_gemini_chat_with_ollama_embeddings_still_needs_server(self):
+        needed, chat_on_ollama = self._flags(llm_provider="gemini", embedding_provider="ollama")
+        assert needed is True
+        assert chat_on_ollama is False
+
+    def test_ollama_chat_with_gemini_embeddings_needs_server_and_chat_check(self):
+        needed, chat_on_ollama = self._flags(llm_provider="ollama", embedding_provider="gemini")
+        assert needed is True
+        assert chat_on_ollama is True
+
+    def test_gemini_chat_with_openai_embeddings_skips_ollama(self):
+        needed, _ = self._flags(llm_provider="gemini", embedding_provider="openai_compatible")
+        assert needed is False
+
     def test_missing_attrs_default_to_ollama(self):
         """A cfg-like object without provider attrs defaults to the Ollama
         path (fail-safe — never skip Ollama setup by accident)."""
@@ -175,6 +195,23 @@ class TestOpenAICompatStartupCheck:
         msg = _build_unreachable_message(cfg)
         assert "http://localhost:1234/v1" in msg
         assert "sk-secret" not in msg
+        assert "Setup Wizard" in msg
+
+
+class TestGeminiStartupMessage:
+    """A Gemini user cannot fix a failed check by starting a local server, so
+    the warning must point at the API key and connectivity instead."""
+
+    def test_gemini_message_points_at_key_and_never_shows_it(self):
+        from types import SimpleNamespace
+        from desktop_app.app import _build_unreachable_message
+        cfg = SimpleNamespace(llm_provider="gemini", gemini_api_key="AIza-secret",
+                              llm_base_url="http://localhost:1234/v1")
+        msg = _build_unreachable_message(cfg)
+        assert "Gemini" in msg
+        assert "API key" in msg
+        assert "AIza-secret" not in msg
+        assert "localhost:1234" not in msg, "an OpenAI-compatible URL is irrelevant on the Gemini path"
         assert "Setup Wizard" in msg
 
 

@@ -179,19 +179,27 @@ def check_ollama_server() -> Tuple[bool, Optional[str]]:
     return check_version(base_url, timeout=5.0)
 
 
+# Providers that run outside the local Ollama server.
+_REMOTE_PROVIDERS = ("openai_compatible", "gemini")
+
+# Where users create a Gemini API key.
+GEMINI_API_KEY_URL = "https://aistudio.google.com/apikey"
+
+
 def get_required_models() -> List[str]:
     """Get the Ollama models that must be present locally, given the active
     providers.
 
     Only models that actually run on Ollama are required:
     - Chat model + intent-judge model — when the chat provider is Ollama
-      (both run through the chat backend). Skipped for an OpenAI-compatible
-      chat provider, where those are remote model names, not Ollama pulls.
+      (both run through the chat backend). Skipped for a remote chat
+      provider (OpenAI-compatible or Gemini), where those are remote model
+      names, not Ollama pulls.
     - Embedding model — when the effective embedding provider is Ollama
       (covers the advanced split where chat is remote but embeddings are
       local). Skipped when embeddings are remote.
 
-    A pure OpenAI-compatible setup therefore requires nothing locally.
+    A purely remote setup therefore requires nothing locally.
     """
     try:
         cfg = load_settings()
@@ -200,19 +208,19 @@ def get_required_models() -> List[str]:
         models = []
 
         # Chat model runs on the chat provider's backend.
-        if llm_provider != "openai_compatible":
+        if llm_provider not in _REMOTE_PROVIDERS:
             if cfg.ollama_chat_model:
                 models.append(cfg.ollama_chat_model)
 
         # Embedding model runs on the embedding provider's backend.
-        if embed_provider != "openai_compatible":
+        if embed_provider not in _REMOTE_PROVIDERS:
             if cfg.ollama_embed_model and cfg.ollama_embed_model not in models:
                 models.append(cfg.ollama_embed_model)
 
         # The fast model powers voice intent classification and the other
         # real-time passes, but is only an Ollama pull when the chat
         # provider is Ollama (config load resolves it per provider).
-        if llm_provider != "openai_compatible":
+        if llm_provider not in _REMOTE_PROVIDERS:
             fast_model = getattr(cfg, "fast_model", "gemma4:e2b")
             if fast_model and fast_model not in models:
                 models.append(fast_model)
@@ -336,13 +344,18 @@ def should_show_setup_wizard(force_server_check: bool = False) -> bool:
     Pass ``force_server_check=True`` after auto-start has already been
     attempted and failed to re-evaluate the unreachable-server case.
     """
-    # An OpenAI-compatible user has opted out of the local Ollama stack,
-    # so the Ollama-centric prerequisites don't apply — never auto-show.
+    # A remote-provider user has opted out of the local Ollama stack, so the
+    # Ollama-centric prerequisites don't apply. An OpenAI-compatible setup
+    # never auto-shows; a Gemini setup shows only when no API key is
+    # available (config or environment), since nothing works without one.
     # (The wizard can still be opened manually from the tray to switch back.)
     try:
         cfg = load_settings()
-        if getattr(cfg, "llm_provider", "ollama") == "openai_compatible":
+        provider = getattr(cfg, "llm_provider", "ollama")
+        if provider == "openai_compatible":
             return False
+        if provider == "gemini":
+            return not str(getattr(cfg, "gemini_api_key", "") or "").strip()
     except Exception:
         pass
 
@@ -510,7 +523,7 @@ class ScrollableWizardPage(QWizardPage):
                          for i in range(layout.count()))
         stage = {
             "WhisperSetupPage": 0, "ProviderChoicePage": 1,
-            "WelcomePage": 1, "OpenAICompatiblePage": 1,
+            "WelcomePage": 1, "OpenAICompatiblePage": 1, "GeminiPage": 1,
             "OllamaInstallPage": 1, "OllamaServerPage": 1, "ModelsPage": 1,
             "DictationPage": 2, "MCPPage": 2, "SearchProvidersPage": 2,
             "LocationPage": 2, "CompletePage": 3,
@@ -565,6 +578,7 @@ class SetupWizard(QWizard):
         self.welcome_page = WelcomePage(self)
         self.provider_choice_page = ProviderChoicePage(self)
         self.openai_compat_page = OpenAICompatiblePage(self)
+        self.gemini_page = GeminiPage(self)
         self.ollama_install_page = OllamaInstallPage(self)
         self.ollama_server_page = OllamaServerPage(self)
         self.models_page = ModelsPage(self)
@@ -579,6 +593,7 @@ class SetupWizard(QWizard):
         self.mlx_whisper_page_id = self.addPage(self.mlx_whisper_page)
         self.provider_choice_page_id = self.addPage(self.provider_choice_page)
         self.openai_compat_page_id = self.addPage(self.openai_compat_page)
+        self.gemini_page_id = self.addPage(self.gemini_page)
         self.ollama_install_page_id = self.addPage(self.ollama_install_page)
         self.ollama_server_page_id = self.addPage(self.ollama_server_page)
         self.models_page_id = self.addPage(self.models_page)
@@ -589,7 +604,8 @@ class SetupWizard(QWizard):
         self.complete_page_id = self.addPage(self.complete_page)
 
         # Speech recognition comes first; the provider choice then branches
-        # to Ollama readiness or OpenAI-compatible connection settings.
+        # to Ollama readiness, OpenAI-compatible connection settings, or the
+        # Gemini API key page.
         self.setStartId(self.mlx_whisper_page_id)
 
         # Custom button labels
@@ -909,12 +925,12 @@ class WelcomePage(ScrollableWizardPage):
 
 
 class ProviderChoicePage(ScrollableWizardPage):
-    """Choose which local runtime serves the LLM: Ollama (the bundled
-    default) or an OpenAI-compatible server (LM Studio, oMLX, llama.cpp's
-    ``llama-server``, vLLM, LocalAI). The choice branches the rest of the
-    wizard — Ollama continues to the install/server/models flow, while
-    OpenAI-compatible jumps to a connection-config page and skips the
-    Ollama-specific pages entirely."""
+    """Choose what serves the LLM: Ollama (the bundled default), an
+    OpenAI-compatible server (LM Studio, oMLX, llama.cpp's ``llama-server``,
+    vLLM, LocalAI), or Google Gemini in the cloud. The choice branches the
+    rest of the wizard — Ollama continues to the install/server/models flow,
+    OpenAI-compatible jumps to a connection-config page, and Gemini jumps to
+    its API key page; both remote paths skip the Ollama-specific pages."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -925,12 +941,12 @@ class ProviderChoicePage(ScrollableWizardPage):
         layout.setSpacing(16)
         layout.setContentsMargins(28, 20, 28, 20)
 
-        title = QLabel("Choose your local intelligence")
+        title = QLabel("Choose your intelligence")
         title.setObjectName("title")
         layout.addWidget(title)
 
         subtitle = QLabel(
-            "Two ways to run Jarvis. Your models stay on hardware you control."
+            "Run models on hardware you control, or use Google Gemini in the cloud."
         )
         subtitle.setObjectName("subtitle")
         subtitle.setWordWrap(True)
@@ -942,9 +958,10 @@ class ProviderChoicePage(ScrollableWizardPage):
         # lives in its own card (Qt's auto-exclusivity only applies to radios
         # sharing a direct parent, which these do not).
         self._button_group = QButtonGroup(self)
-        choices = QHBoxLayout()
-        self._responsive_columns = choices
-        choices.setSpacing(20)
+        # Three cards stack vertically: side by side they would not fit the
+        # minimum wizard width without a horizontal scroll.
+        choices = QVBoxLayout()
+        choices.setSpacing(12)
 
         self._ollama_radio = QRadioButton("  🦙  Ollama (recommended)")
         self._ollama_radio.setChecked(True)
@@ -967,10 +984,21 @@ class ProviderChoicePage(ScrollableWizardPage):
             "URL and model name on the next step.",
         )
         choices.addWidget(openai_card, 1)
+
+        self._gemini_radio = QRadioButton("  ✨  Google Gemini (cloud)")
+        self._button_group.addButton(self._gemini_radio)
+        gemini_card = self._provider_card(
+            self._gemini_radio,
+            "Uses Google's Gemini API with your own API key. Fast and capable "
+            "with no GPU or downloads needed, but your conversations are sent "
+            "to Google's cloud. You paste your key on the next step.",
+        )
+        choices.addWidget(gemini_card, 1)
         layout.addLayout(choices)
 
         self._ollama_radio.toggled.connect(self._on_toggle)
         self._openai_radio.toggled.connect(self._on_toggle)
+        self._gemini_radio.toggled.connect(self._on_toggle)
 
         layout.addStretch()
         self.setLayout(layout)
@@ -1009,35 +1037,43 @@ class ProviderChoicePage(ScrollableWizardPage):
         if provider == "openai_compatible":
             self._openai_radio.setChecked(True)
             self._selected = "openai_compatible"
+        elif provider == "gemini":
+            self._gemini_radio.setChecked(True)
+            self._selected = "gemini"
         else:
             self._ollama_radio.setChecked(True)
             self._selected = "ollama"
 
     def _on_toggle(self):
-        self._selected = (
-            "openai_compatible" if self._openai_radio.isChecked() else "ollama"
-        )
+        if self._openai_radio.isChecked():
+            self._selected = "openai_compatible"
+        elif self._gemini_radio.isChecked():
+            self._selected = "gemini"
+        else:
+            self._selected = "ollama"
 
     def validatePage(self) -> bool:
         """Persist the provider choice. Selecting Ollama clears any
-        OpenAI-compatible overrides so the Ollama settings become
-        authoritative again — no stale base URL / key / model is left
-        pointing at a former remote server."""
+        remote-provider overrides (OpenAI-compatible and Gemini) so the
+        Ollama settings become authoritative again — no stale base URL /
+        key / model is left pointing at a former remote server."""
         try:
             from jarvis.config import default_config_path, _load_json, _save_json
             config_path = default_config_path()
             config = _load_json(config_path) or {}
 
-            if self._selected == "openai_compatible":
-                config["llm_provider"] = "openai_compatible"
+            if self._selected in _REMOTE_PROVIDERS:
+                config["llm_provider"] = self._selected
             else:
                 # Ollama is the default; omit the key and drop the
-                # OpenAI-compatible connection overrides.
+                # remote-provider connection overrides.
                 config.pop("llm_provider", None)
                 for stale in (
                     "llm_base_url", "llm_api_key", "llm_chat_model",
                     "embedding_provider", "embedding_base_url",
                     "embedding_api_key", "embedding_model",
+                    "gemini_api_key", "gemini_base_url", "gemini_chat_model",
+                    "gemini_fast_model", "gemini_embed_model",
                 ):
                     config.pop(stale, None)
 
@@ -1056,6 +1092,8 @@ class ProviderChoicePage(ScrollableWizardPage):
             return super().nextId()
         if self._selected == "openai_compatible":
             return wizard.openai_compat_page_id
+        if self._selected == "gemini":
+            return wizard.gemini_page_id
         return wizard.welcome_page_id
 
 
@@ -1785,6 +1823,259 @@ class OpenAICompatiblePage(ScrollableWizardPage):
             _save_json(config_path, config)
         except Exception:
             pass
+        return True
+
+    def nextId(self) -> int:
+        wizard = self.wizard()
+        if isinstance(wizard, SetupWizard):
+            return wizard.dictation_page_id
+        return super().nextId()
+
+
+class _GeminiCheckWorker(KeepAliveWorker):
+    """Checks a Gemini API key off the UI thread: lists the models it can
+    use and probes chat, tool calling and embeddings on the chosen models."""
+
+    done = pyqtSignal(object)  # ServerCapabilities
+
+    def __init__(self, api_key: str, chat_model: str, embed_model: str):
+        super().__init__()
+        self._api_key = api_key
+        self._chat_model = chat_model
+        self._embed_model = embed_model
+
+    def run(self):
+        try:
+            from jarvis.llm import GeminiBackend
+            backend = GeminiBackend(api_key=self._api_key or None)
+            caps = backend.check_capabilities(self._chat_model, self._embed_model or None)
+        except Exception as exc:
+            debug_log(f"Gemini key check failed: {type(exc).__name__}", "desktop")
+            from jarvis.llm import ServerCapabilities
+            caps = ServerCapabilities()
+        self.done.emit(caps)
+
+
+class GeminiPage(ScrollableWizardPage):
+    """Collect the Google Gemini API key and model choices.
+
+    The common case is "paste key, Next": the chat, fast and embedding
+    models are prefilled with the ``-latest`` defaults. **Check key** lists
+    the models the key can use into the editable dropdowns and probes chat,
+    tool calling and embeddings, so a bad key or model is caught here.
+    A key found in ``GEMINI_API_KEY`` / ``GOOGLE_API_KEY`` counts as entered
+    and is not copied into ``config.json``.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTitle("")
+        self._check_worker = None
+        self._env_key = ""
+
+        layout = QVBoxLayout()
+        layout.setSpacing(14)
+        layout.setContentsMargins(28, 20, 28, 20)
+
+        title = QLabel("Connect Google Gemini")
+        title.setObjectName("title")
+        layout.addWidget(title)
+
+        subtitle = QLabel(
+            "Paste your Gemini API key. Your requests go to Google's cloud; "
+            "speech recognition and voice output stay on this computer."
+        )
+        subtitle.setObjectName("subtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        layout.addSpacing(4)
+
+        columns = QHBoxLayout()
+        self._responsive_columns = columns
+        columns.setSpacing(20)
+
+        key_card = QFrame()
+        key_card.setObjectName("card")
+        form = QVBoxLayout(key_card)
+        form.setContentsMargins(16, 14, 16, 14)
+        form.setSpacing(10)
+        key_title = QLabel("01  API key")
+        key_title.setObjectName("section_title")
+        form.addWidget(key_title)
+
+        key_label = QLabel("Gemini API key")
+        key_label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        form.addWidget(key_label)
+        self._api_key_input = QLineEdit()
+        self._api_key_input.setPlaceholderText("AIza…")
+        self._api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._api_key_input.textChanged.connect(lambda *_: self.completeChanged.emit())
+        form.addWidget(self._api_key_input)
+
+        get_key_btn = QPushButton("Get a free API key ↗")
+        get_key_btn.setObjectName("secondary")
+        get_key_btn.clicked.connect(lambda: webbrowser.open(GEMINI_API_KEY_URL))
+        form.addWidget(get_key_btn)
+
+        self._check_btn = QPushButton("Check key && load models")
+        self._check_btn.setObjectName("secondary")
+        self._check_btn.clicked.connect(self._on_check)
+        form.addWidget(self._check_btn)
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(f"font-size: 12px; color: {COLORS['text_secondary']};")
+        form.addWidget(self._status)
+        form.addStretch()
+        columns.addWidget(key_card, 1)
+
+        model_card = QFrame()
+        model_card.setObjectName("card")
+        form = QVBoxLayout(model_card)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setSpacing(10)
+        models_title = QLabel("02  Models")
+        models_title.setObjectName("section_title")
+        form.addWidget(models_title)
+        self._chat_model_combo = self._labelled_combo(form, "Chat model · replies & planning")
+        self._fast_model_combo = self._labelled_combo(form, "Fast model · voice & tools")
+        self._embed_model_combo = self._labelled_combo(form, "Embedding model · memory search")
+        form.addStretch()
+        columns.addWidget(model_card, 1)
+        layout.addLayout(columns)
+
+        layout.addStretch()
+        self.setLayout(layout)
+
+    def _labelled_combo(self, form, label_text):
+        label = QLabel(label_text)
+        label.setStyleSheet("font-size: 13px; font-weight: bold;")
+        form.addWidget(label)
+        combo = QComboBox()
+        combo.setEditable(True)  # any model id the key can reach
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(16)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.currentTextChanged.connect(lambda *_: self.completeChanged.emit())
+        form.addWidget(combo)
+        return combo
+
+    @staticmethod
+    def _defaults() -> Dict[str, str]:
+        from jarvis.config import (
+            DEFAULT_GEMINI_CHAT_MODEL,
+            DEFAULT_GEMINI_EMBED_MODEL,
+            DEFAULT_GEMINI_FAST_MODEL,
+        )
+        return {
+            "gemini_chat_model": DEFAULT_GEMINI_CHAT_MODEL,
+            "gemini_fast_model": DEFAULT_GEMINI_FAST_MODEL,
+            "gemini_embed_model": DEFAULT_GEMINI_EMBED_MODEL,
+        }
+
+    def _combos(self) -> Dict[str, QComboBox]:
+        return {
+            "gemini_chat_model": self._chat_model_combo,
+            "gemini_fast_model": self._fast_model_combo,
+            "gemini_embed_model": self._embed_model_combo,
+        }
+
+    def initializePage(self):
+        from jarvis.config import GEMINI_API_KEY_ENV_VARS, default_config_path, _load_json
+        try:
+            config = _load_json(default_config_path()) or {}
+        except Exception:
+            config = {}
+        self._env_key = next(
+            (os.environ.get(name, "").strip() for name in GEMINI_API_KEY_ENV_VARS
+             if os.environ.get(name, "").strip()),
+            "",
+        )
+        self._api_key_input.setText(str(config.get("gemini_api_key", "") or ""))
+        if self._env_key and not self._api_key_input.text():
+            self._api_key_input.setPlaceholderText("using the key from your environment")
+        defaults = self._defaults()
+        for key, combo in self._combos().items():
+            value = str(config.get(key, "") or "").strip() or defaults[key]
+            if combo.findText(value) < 0:
+                combo.addItem(value)
+            combo.setCurrentText(value)
+        self._status.setText("")
+        self.completeChanged.emit()
+
+    def _effective_key(self) -> str:
+        return (self._api_key_input.text() or "").strip() or self._env_key
+
+    def _on_check(self):
+        key = self._effective_key()
+        if not key:
+            self._status.setText("🔑 Paste your API key first.")
+            return
+        self._check_btn.setEnabled(False)
+        self._status.setText("🔌 Checking your key with Google…")
+        worker = _GeminiCheckWorker(
+            key,
+            (self._chat_model_combo.currentText() or "").strip(),
+            (self._embed_model_combo.currentText() or "").strip(),
+        )
+        worker.done.connect(self._on_checked)
+        self._check_worker = worker  # keep a reference so it isn't GC'd
+        worker.start()
+
+    def _on_checked(self, caps):
+        self._check_btn.setEnabled(True)
+        if not getattr(caps, "reachable", False):
+            self._status.setText(
+                "❌ Google rejected the key or could not be reached. "
+                "Check the key and your internet connection.")
+            return
+        models = list(getattr(caps, "models", []) or [])
+        for combo in (self._chat_model_combo, self._fast_model_combo):
+            current = combo.currentText()
+            for name in models:
+                if combo.findText(name) < 0:
+                    combo.addItem(name)
+            combo.setCurrentText(current)
+        mark = lambda ok: "✅" if ok else "⚠️"
+        self._status.setText(
+            f"{mark(caps.chat)} Chat   {mark(caps.tools)} Tool calling   "
+            f"{mark(caps.embeddings)} Embeddings   ({len(models)} models available)")
+
+    def isComplete(self) -> bool:
+        return bool(self._effective_key()) and bool(
+            (self._chat_model_combo.currentText() or "").strip())
+
+    def validatePage(self) -> bool:
+        """Persist the Gemini setup minimally: the provider, the typed key
+        (an environment key is left in the environment), and only the model
+        names that differ from the defaults. Embeddings follow Gemini."""
+        if not self.isComplete():
+            return False
+        try:
+            from jarvis.config import default_config_path, _load_json, _save_json
+            config_path = default_config_path()
+            config = _load_json(config_path) or {}
+            config["llm_provider"] = "gemini"
+            typed_key = (self._api_key_input.text() or "").strip()
+            if typed_key:
+                config["gemini_api_key"] = typed_key
+            else:
+                config.pop("gemini_api_key", None)
+            defaults = self._defaults()
+            for key, combo in self._combos().items():
+                value = (combo.currentText() or "").strip()
+                if value and value != defaults[key]:
+                    config[key] = value
+                else:
+                    config.pop(key, None)
+            for inherited in ("embedding_provider", "embedding_base_url",
+                              "embedding_api_key", "embedding_model"):
+                config.pop(inherited, None)
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            _save_json(config_path, config)
+            debug_log("setup wizard saved Gemini provider settings", "desktop")
+        except Exception as exc:
+            debug_log(f"setup wizard failed to save Gemini settings: {type(exc).__name__}", "desktop")
         return True
 
     def nextId(self) -> int:

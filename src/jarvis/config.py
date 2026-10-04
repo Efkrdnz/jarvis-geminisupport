@@ -49,6 +49,18 @@ DEFAULT_CHAT_MODEL = "gemma4:e2b"
 # this pull-name only exists on Ollama.
 DEFAULT_FAST_MODEL = "gemma4:e2b"
 
+# Google Gemini defaults (``llm_provider: "gemini"``). The ``-latest``
+# aliases track Google's current Flash generation, so a configured install
+# keeps working as dated model versions are retired. Flash-Lite serves the
+# fast tier: the lowest-latency Gemini model for tiny strict-JSON passes.
+DEFAULT_GEMINI_CHAT_MODEL = "gemini-flash-latest"
+DEFAULT_GEMINI_FAST_MODEL = "gemini-flash-lite-latest"
+DEFAULT_GEMINI_EMBED_MODEL = "gemini-embedding-001"
+
+# Environment variables consulted for the Gemini API key when the config
+# file does not set ``gemini_api_key`` (first match wins).
+GEMINI_API_KEY_ENV_VARS = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
+
 
 def get_supported_model_ids() -> set[str]:
     """Get set of supported model IDs for quick lookup."""
@@ -88,14 +100,19 @@ class Settings:
     # Provider-aware fields (see src/jarvis/llm/llm.spec.md). The
     # `ollama_*` fields below are kept as aliases so any caller still
     # reading them keeps working when the provider is Ollama.
-    llm_provider: str  # "ollama" | "openai_compatible"
+    llm_provider: str  # "ollama" | "openai_compatible" | "gemini"
     llm_base_url: str
     llm_api_key: str
     llm_chat_model: str
-    embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible"
+    embedding_provider: str  # "" (= same as llm_provider) | "ollama" | "openai_compatible" | "gemini"
     embedding_base_url: str
     embedding_api_key: str
     embedding_model: str
+    # Google Gemini connection (read only when a provider is "gemini"). The
+    # Gemini model names resolve into llm_chat_model / fast_model /
+    # embedding_model above.
+    gemini_api_key: str
+    gemini_base_url: str
     # Disk-format aliases. Older config files name these fields, so they
     # stay readable here; the loader promotes their values into the
     # provider-aware fields above so everything inside the codebase reads
@@ -305,7 +322,8 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
     untouched instead of truncated.
 
     Restricts the saved file to ``0o600`` on POSIX so credentials in
-    config (``llm_api_key``, ``embedding_api_key``, ``brave_search_api_key``)
+    config (``llm_api_key``, ``gemini_api_key``, ``embedding_api_key``,
+    ``brave_search_api_key``)
     are not readable by other users on multi-user systems. ``chmod`` is a
     no-op on Windows but is wrapped in a try so platform quirks never
     fail the save.
@@ -508,6 +526,14 @@ def get_default_config() -> Dict[str, Any]:
         "embedding_base_url": "",
         "embedding_api_key": "",
         "embedding_model": "",  # falls back to ollama_embed_model when empty
+        # Google Gemini (llm_provider / embedding_provider "gemini"). Empty
+        # model names resolve to the DEFAULT_GEMINI_* models; an empty key
+        # falls back to the GEMINI_API_KEY / GOOGLE_API_KEY environment.
+        "gemini_api_key": "",
+        "gemini_base_url": "",  # empty = Google's official endpoint
+        "gemini_chat_model": "",
+        "gemini_fast_model": "",
+        "gemini_embed_model": "",
         "ollama_base_url": "http://127.0.0.1:11434",
         "ollama_embed_model": "nomic-embed-text",
         "ollama_chat_model": DEFAULT_CHAT_MODEL,
@@ -727,16 +753,27 @@ def load_settings() -> Settings:
     # Ollama path, so a stale ``llm_chat_model`` (e.g. promoted by the v2
     # migration) can never shadow it.
     llm_provider = str(merged.get("llm_provider", "ollama") or "ollama").strip().lower()
-    if llm_provider not in ("ollama", "openai_compatible"):
+    if llm_provider not in ("ollama", "openai_compatible", "gemini"):
         llm_provider = "ollama"
     llm_base_url = str(merged.get("llm_base_url", "") or "").strip() or ollama_base_url
     llm_api_key = str(merged.get("llm_api_key", "") or "").strip()
+    gemini_api_key = str(merged.get("gemini_api_key", "") or "").strip()
+    if not gemini_api_key:
+        for env_name in GEMINI_API_KEY_ENV_VARS:
+            gemini_api_key = os.environ.get(env_name, "").strip()
+            if gemini_api_key:
+                break
+    gemini_base_url = str(merged.get("gemini_base_url", "") or "").strip()
     if llm_provider == "openai_compatible":
         llm_chat_model = str(merged.get("llm_chat_model", "") or "").strip() or ollama_chat_model
+    elif llm_provider == "gemini":
+        llm_chat_model = (
+            str(merged.get("gemini_chat_model", "") or "").strip() or DEFAULT_GEMINI_CHAT_MODEL
+        )
     else:
         llm_chat_model = ollama_chat_model
     embedding_provider_raw = str(merged.get("embedding_provider", "") or "").strip().lower()
-    if embedding_provider_raw not in ("", "ollama", "openai_compatible"):
+    if embedding_provider_raw not in ("", "ollama", "openai_compatible", "gemini"):
         embedding_provider_raw = ""
     embedding_provider = embedding_provider_raw
     embedding_base_url = str(merged.get("embedding_base_url", "") or "").strip()
@@ -745,6 +782,10 @@ def load_settings() -> Settings:
     _effective_embed_provider = embedding_provider or llm_provider
     if _effective_embed_provider == "openai_compatible":
         embedding_model = str(merged.get("embedding_model", "") or "").strip() or ollama_embed_model
+    elif _effective_embed_provider == "gemini":
+        embedding_model = (
+            str(merged.get("gemini_embed_model", "") or "").strip() or DEFAULT_GEMINI_EMBED_MODEL
+        )
     else:
         embedding_model = ollama_embed_model
     use_stdin = bool(merged.get("use_stdin", False))
@@ -818,12 +859,18 @@ def load_settings() -> Settings:
     # automatic default is the small Ollama pull on the Ollama chat path and
     # the active chat model on an OpenAI-compatible provider, where that
     # pull-name does not exist and the chat model is the one name the user's
-    # server is known to serve.
-    fast_model = str(merged.get("fast_model", "") or "").strip()
-    if not fast_model:
+    # server is known to serve. Gemini has its own fast-tier key so an Ollama
+    # ``fast_model`` never reaches Google's API.
+    if llm_provider == "gemini":
         fast_model = (
-            llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
+            str(merged.get("gemini_fast_model", "") or "").strip() or DEFAULT_GEMINI_FAST_MODEL
         )
+    else:
+        fast_model = str(merged.get("fast_model", "") or "").strip()
+        if not fast_model:
+            fast_model = (
+                llm_chat_model if llm_provider == "openai_compatible" else DEFAULT_FAST_MODEL
+            )
     intent_judge_timeout_sec = float(merged.get("intent_judge_timeout_sec", 6.0))
 
     # Transcript Buffer - ambient speech context for intent judge (separate from dialogue)
@@ -915,6 +962,8 @@ def load_settings() -> Settings:
         embedding_base_url=embedding_base_url,
         embedding_api_key=embedding_api_key,
         embedding_model=embedding_model,
+        gemini_api_key=gemini_api_key,
+        gemini_base_url=gemini_base_url,
         ollama_base_url=ollama_base_url,
         ollama_embed_model=ollama_embed_model,
         ollama_chat_model=ollama_chat_model,

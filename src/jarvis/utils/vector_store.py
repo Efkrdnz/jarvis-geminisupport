@@ -15,6 +15,12 @@ from .vector_persistence import persist_vector
 from ..debug import debug_log
 
 
+# Width of the memory index. Every embedding backend must return vectors of
+# this size (backends whose models default to a wider output request this
+# dimensionality explicitly) so memory search keeps working across providers.
+MEMORY_EMBEDDING_DIMENSION = 768
+
+
 class PythonVectorStore:
     """Simple in-memory vector store with SQLite persistence."""
     
@@ -143,7 +149,7 @@ def get_python_vector_store(db_path: str) -> PythonVectorStore:
         return store
 
 
-def get_best_vector_store(db_path: str, dimension: int = 768):
+def get_best_vector_store(db_path: str, dimension: int = MEMORY_EMBEDDING_DIMENSION):
     """Get the best available vector store (FAISS if available, otherwise Python fallback)."""
     # Try FAISS first (much faster)
     try:
