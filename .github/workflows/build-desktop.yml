@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      windows_only:
+        description: 'Build only the Windows app'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: build-desktop-${{ github.ref_name }}-${{ inputs.version }}
@@ -45,6 +50,7 @@ jobs:
           # Auto-generated at build time
           VERSION = "${{ inputs.version }}"
           RELEASE_CHANNEL = "${{ inputs.channel }}"
+          UPDATE_REPOSITORY = "${{ github.repository }}"
           "@ | Out-File -FilePath src/jarvis/_version.py -Encoding utf8
           Write-Host "Generated version file with VERSION=${{ inputs.version }}, RELEASE_CHANNEL=${{ inputs.channel }}"
 
@@ -118,6 +124,7 @@ jobs:
 
   # ── macOS: build + optional smoke test (arm64 + x64) ────────────────────
   build-macos:
+    if: ${{ !inputs.windows_only }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -146,6 +153,7 @@ jobs:
           # Auto-generated at build time
           VERSION = "${{ inputs.version }}"
           RELEASE_CHANNEL = "${{ inputs.channel }}"
+          UPDATE_REPOSITORY = "${{ github.repository }}"
           EOF
           echo "Generated version file with VERSION=${{ inputs.version }}, RELEASE_CHANNEL=${{ inputs.channel }}"
 
@@ -199,6 +207,7 @@ jobs:
 
   # ── Linux: build + optional smoke test ──────────────────────────────────
   build-linux:
+    if: ${{ !inputs.windows_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -240,6 +249,7 @@ jobs:
           # Auto-generated at build time
           VERSION = "${{ inputs.version }}"
           RELEASE_CHANNEL = "${{ inputs.channel }}"
+          UPDATE_REPOSITORY = "${{ github.repository }}"
           EOF
           echo "Generated version file with VERSION=${{ inputs.version }}, RELEASE_CHANNEL=${{ inputs.channel }}"
 

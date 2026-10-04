@@ -1,0 +1,68 @@
+name: Windows Release
+
+# Builds and smoke-tests the Windows app from the pushed commit, then
+# publishes it as the "latest" pre-release (the develop update channel), so a
+# Windows build can ship from a feature branch without fast-forwarding main.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - claude/ecstatic-shannon-rcrzvk
+
+concurrency:
+  group: windows-release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-desktop.yml
+    with:
+      version: dev-${{ github.sha }}
+      channel: develop
+      smoke_test: true
+      windows_only: true
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 Download Windows build
+        uses: actions/download-artifact@v8
+        with:
+          name: Jarvis-Windows
+          path: artifacts
+
+      - name: 📋 List artifact
+        run: ls -la artifacts
+
+      - name: 🚀 Publish "latest" pre-release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest
+          target_commitish: ${{ github.sha }}
+          name: Jarvis for Windows (Gemini support)
+          prerelease: true
+          draft: false
+          fail_on_unmatched_files: true
+          files: artifacts/Jarvis-Windows-x64.zip
+          body: |
+            🪟 **Windows build with Google Gemini support**
+
+            ### 📦 Install
+            1. Download `Jarvis-Windows-x64.zip` below and extract it.
+            2. Run `Jarvis.exe` (the installer) and follow the setup wizard.
+            3. On **Choose your intelligence**, pick **✨ Google Gemini (cloud)** and paste your API key from https://aistudio.google.com/apikey, or keep using Ollama / an OpenAI-compatible server.
+
+            ### ⚡ Prerequisites
+            - A Google Gemini API key (opt-in cloud: conversations are sent to Google), or
+            - [Ollama](https://ollama.com/download) / any OpenAI-compatible server for fully local use
+
+            **Commit**: ${{ github.sha }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

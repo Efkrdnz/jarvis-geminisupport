@@ -1445,3 +1445,44 @@ class TestPathEscaping:
         path = Path('/opt/Jarvis/Jarvis')
         escaped = _escape_shell_path(path)
         assert escaped == "'/opt/Jarvis/Jarvis'"
+
+
+class TestUpdateRepository:
+    """A build checks for updates in the repository that produced it, so a
+    fork's build is never "updated" to the upstream app (or vice versa)."""
+
+    def _version_module(self, monkeypatch, **attrs):
+        import sys
+        import types
+        mod = types.ModuleType("jarvis._version")
+        mod.VERSION = "dev-abc1234"
+        mod.RELEASE_CHANNEL = "develop"
+        for key, value in attrs.items():
+            setattr(mod, key, value)
+        monkeypatch.setitem(sys.modules, "jarvis._version", mod)
+
+    @pytest.mark.unit
+    def test_build_stamped_repository_is_used(self, monkeypatch):
+        from jarvis import get_update_repository
+        self._version_module(monkeypatch, UPDATE_REPOSITORY="someone/jarvis-fork")
+        assert get_update_repository() == "someone/jarvis-fork"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("stamp", [None, "", "not a repo", "../evil", "a/b/c"])
+    def test_missing_or_malformed_stamp_falls_back_to_upstream(self, monkeypatch, stamp):
+        from jarvis import DEFAULT_UPDATE_REPOSITORY, get_update_repository
+        if stamp is None:
+            self._version_module(monkeypatch)
+        else:
+            self._version_module(monkeypatch, UPDATE_REPOSITORY=stamp)
+        assert get_update_repository() == DEFAULT_UPDATE_REPOSITORY
+
+    @pytest.mark.unit
+    def test_update_check_queries_the_stamped_repository(self, monkeypatch):
+        self._version_module(monkeypatch, UPDATE_REPOSITORY="someone/jarvis-fork")
+        mock_response = MagicMock()
+        mock_response.json.return_value = []
+        mock_response.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=mock_response) as mock_get:
+            check_for_updates()
+        assert mock_get.call_args[0][0] == "https://api.github.com/repos/someone/jarvis-fork/releases"

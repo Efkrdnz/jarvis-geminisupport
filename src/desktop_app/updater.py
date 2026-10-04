@@ -22,12 +22,11 @@ from typing import Optional
 import requests
 from PyQt6.QtCore import QObject, QThread, pyqtSignal
 
-from jarvis import get_version
+from jarvis import get_update_repository, get_version
 from jarvis.debug import debug_log
 
 from .paths import get_log_dir
 
-GITHUB_REPO = "isair/jarvis"
 # Absolute path to macOS's ditto tool. Exposed as a module attribute so
 # tests (which run on non-macOS CI runners without /usr/bin/ditto) can
 # substitute a path that exists.
@@ -95,7 +94,9 @@ def _escape_shell_path(path: Path) -> str:
     """
     # Single quotes prevent interpretation, escape embedded single quotes
     return "'" + str(path).replace("'", "'\"'\"'") + "'"
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
+def _releases_api_url() -> str:
+    """GitHub releases API for the repository this build updates from."""
+    return f"https://api.github.com/repos/{get_update_repository()}/releases"
 
 
 def _get_update_state_path() -> Path:
@@ -266,8 +267,10 @@ def check_for_updates(channel: Optional[UpdateChannel] = None) -> UpdateStatus:
         )
 
     try:
+        releases_url = _releases_api_url()
+        debug_log(f"checking for updates at {releases_url}", "updater")
         response = requests.get(
-            GITHUB_API_URL,
+            releases_url,
             params={"per_page": 100},
             headers={"Accept": "application/vnd.github.v3+json"},
             timeout=10,

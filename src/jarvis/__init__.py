@@ -18,6 +18,7 @@ and natural language processing capabilities.
 # See: https://github.com/spatialaudio/python-sounddevice/issues/378
 # See: https://docs.python.org/3/whatsnew/3.8.html#ctypes
 import os as _os
+import re
 import sys as _sys
 
 if getattr(_sys, 'frozen', False) and _sys.platform == 'win32':
@@ -48,6 +49,7 @@ del _os, _sys
 # Most Windows users don't have Developer Mode enabled, so HF falls back to
 # copying files instead of symlinking. This is fine — just noisier.
 import os as _os
+import re
 if not _os.environ.get("HF_HUB_DISABLE_SYMLINKS_WARNING"):
     _os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 del _os
@@ -69,6 +71,30 @@ def get_version() -> tuple[str, str]:
         return "dev-local", "develop"
 
 
+# Repository whose GitHub releases a build checks for updates when the build
+# did not stamp its own (source runs, older version files).
+DEFAULT_UPDATE_REPOSITORY = "isair/jarvis"
+_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+
+
+def get_update_repository() -> str:
+    """Return the ``owner/name`` GitHub repository this build updates from.
+
+    Release builds stamp ``UPDATE_REPOSITORY`` (the repository that built
+    them) into ``_version.py``, so a fork's build is offered the fork's
+    releases rather than upstream's. A missing or malformed stamp falls back
+    to :data:`DEFAULT_UPDATE_REPOSITORY`.
+    """
+    try:
+        from ._version import UPDATE_REPOSITORY
+    except ImportError:
+        return DEFAULT_UPDATE_REPOSITORY
+    value = str(UPDATE_REPOSITORY or "").strip()
+    if _REPOSITORY_PATTERN.match(value) and ".." not in value:
+        return value
+    return DEFAULT_UPDATE_REPOSITORY
+
+
 def main() -> None:
     """Lazy entrypoint to avoid importing heavy modules at package import time.
 
@@ -79,4 +105,4 @@ def main() -> None:
     from .daemon import main as _main
     _main()
 
-__all__ = ["main", "load_settings", "get_version"]
+__all__ = ["main", "load_settings", "get_version", "get_update_repository"]

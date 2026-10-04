@@ -142,7 +142,7 @@ jobs:
             ---
 
             ### ⚡ Prerequisites
-            - [Ollama](https://ollama.com/download) (default), or any OpenAI-compatible server (LM Studio, Jan, llama.cpp, vLLM, oMLX, LocalAI, …)
+            - [Ollama](https://ollama.com/download) (default), any OpenAI-compatible server (LM Studio, Jan, llama.cpp, vLLM, oMLX, LocalAI, …), or a Google Gemini API key (opt-in cloud)
 
             ### 📦 Downloads
             | Platform | File | Notes |
