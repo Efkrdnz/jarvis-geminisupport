@@ -244,6 +244,70 @@ class TestGetRequiredModels:
         assert models == ["gpt-oss:20b", "gemma4:e2b"]
 
 
+@pytest.fixture(autouse=True)
+def _wizard_completed_before(tmp_path):
+    """Most tests describe an install that has already been through the
+    wizard; first-run behaviour is exercised explicitly below. Tests that
+    patch ``default_config_path`` themselves override this one."""
+    cfg_path = tmp_path / "completed-config.json"
+    cfg_path.write_text(json.dumps({"setup_wizard_completed": True}))
+    with patch("jarvis.config.default_config_path", return_value=cfg_path):
+        yield
+
+
+class TestFirstRunShowsWizard:
+    """The provider choice is the user's to make, so the wizard opens on the
+    first launch even when a ready Ollama would let Jarvis start without it."""
+
+    def _ready_ollama(self):
+        return OllamaStatus(is_cli_installed=True, cli_path="/usr/bin/ollama",
+                            is_server_running=True, server_version="0.6.0",
+                            installed_models=["gemma4:e2b"], missing_models=[])
+
+    def _config(self, tmp_path, data):
+        cfg_path = tmp_path / "config.json"
+        cfg_path.write_text(json.dumps(data))
+        return cfg_path
+
+    @pytest.mark.parametrize("existing", [{}, {"ollama_chat_model": "gemma4:e4b"}])
+    def test_wizard_shows_until_it_has_been_completed(self, tmp_path, existing):
+        cfg_path = self._config(tmp_path, existing)
+        with patch("jarvis.config.default_config_path", return_value=cfg_path), \
+             patch("desktop_app.setup_wizard.check_ollama_status", return_value=self._ready_ollama()):
+            assert should_show_setup_wizard() is True
+
+    def test_completed_wizard_is_not_shown_again_when_nothing_is_needed(self, tmp_path):
+        cfg_path = self._config(tmp_path, {"setup_wizard_completed": True})
+        with patch("jarvis.config.default_config_path", return_value=cfg_path), \
+             patch("desktop_app.setup_wizard.check_ollama_status", return_value=self._ready_ollama()):
+            assert should_show_setup_wizard() is False
+
+    def test_finishing_the_wizard_records_completion_and_keeps_settings(self, qapp, tmp_path, monkeypatch):
+        from desktop_app.setup_wizard import SetupWizard
+        monkeypatch.setattr(ui_module().WhisperSetupPage, "initializePage", lambda self: None)
+        cfg_path = self._config(tmp_path, {"llm_provider": "gemini", "gemini_api_key": "k"})
+        with patch("jarvis.config.default_config_path", return_value=cfg_path):
+            wizard = SetupWizard()
+            wizard.accept()
+        saved = json.loads(cfg_path.read_text())
+        assert saved["setup_wizard_completed"] is True
+        assert saved["llm_provider"] == "gemini" and saved["gemini_api_key"] == "k"
+
+    def test_cancelling_the_wizard_does_not_record_completion(self, qapp, tmp_path, monkeypatch):
+        from desktop_app.setup_wizard import SetupWizard
+        monkeypatch.setattr(ui_module().WhisperSetupPage, "initializePage", lambda self: None)
+        cfg_path = self._config(tmp_path, {})
+        with patch("jarvis.config.default_config_path", return_value=cfg_path):
+            wizard = SetupWizard()
+            wizard.reject()
+        assert "setup_wizard_completed" not in json.loads(cfg_path.read_text())
+
+
+def ui_module():
+    import desktop_app.setup_wizard as ui
+    return ui
+
+
 class TestRequiredModelsGemini:
     """Gemini runs in Google's cloud, so only models that stay on Ollama are
     required locally."""

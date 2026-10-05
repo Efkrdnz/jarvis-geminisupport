@@ -6,6 +6,7 @@ First-run wizard that sets up Whisper and a local model provider before Jarvis s
 
 The setup wizard is shown only when **user action is required** — it is not shown merely because the Ollama server isn't running (Jarvis can auto-start it), unless auto-start has already been attempted and failed. The triggers are:
 
+0. The wizard has never been finished (`setup_wizard_completed` is not set in `config.json`). Choosing a provider is the user's decision, so the first launch always opens the wizard, even when a ready Ollama would let Jarvis start without it. `SetupWizard.accept()` (Finish) records the marker without touching other keys; cancelling does not, so a cancelled first run shows the wizard again. The marker has no Settings field, so the settings window preserves it as an unknown key.
 1. Ollama CLI is not installed.
 2. Ollama server is running but required models are missing.
 3. Ollama auto-start timed out (server still unreachable).

@@ -182,6 +182,9 @@ def check_ollama_server() -> Tuple[bool, Optional[str]]:
 # Providers that run outside the local Ollama server.
 _REMOTE_PROVIDERS = ("openai_compatible", "gemini")
 
+# Config key recording that the user has finished the setup wizard once.
+SETUP_COMPLETED_KEY = "setup_wizard_completed"
+
 # Where users create a Gemini API key.
 GEMINI_API_KEY_URL = "https://aistudio.google.com/apikey"
 
@@ -343,7 +346,19 @@ def should_show_setup_wizard(force_server_check: bool = False) -> bool:
     since the app can auto-start the server if CLI is installed.
     Pass ``force_server_check=True`` after auto-start has already been
     attempted and failed to re-evaluate the unreachable-server case.
+
+    Until the wizard has been finished once (``setup_wizard_completed`` in
+    config.json) it is always shown: choosing a provider is the user's
+    decision, even when a ready Ollama would let Jarvis start without it.
     """
+    try:
+        from jarvis.config import default_config_path, _load_json
+        if not (_load_json(default_config_path()) or {}).get(SETUP_COMPLETED_KEY):
+            debug_log("setup wizard never completed: showing it", "desktop")
+            return True
+    except Exception as exc:
+        debug_log(f"setup completion check failed: {type(exc).__name__}", "desktop")
+
     # A remote-provider user has opted out of the local Ollama stack, so the
     # Ollama-centric prerequisites don't apply. An OpenAI-compatible setup
     # never auto-shows; a Gemini setup shows only when no API key is
@@ -560,6 +575,22 @@ class ScrollableWizardPage(QWizardPage):
 
 class SetupWizard(QWizard):
     """Main setup wizard window."""
+
+    def accept(self):
+        """Record that setup has been completed, then close. Recording
+        happens only on Finish, so a cancelled first run shows the wizard
+        again next launch."""
+        try:
+            from jarvis.config import default_config_path, _load_json, _save_json
+            config_path = default_config_path()
+            config = _load_json(config_path) or {}
+            config[SETUP_COMPLETED_KEY] = True
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            _save_json(config_path, config)
+            debug_log("setup wizard completed", "desktop")
+        except Exception as exc:
+            debug_log(f"failed to record setup completion: {type(exc).__name__}", "desktop")
+        super().accept()
 
     def __init__(self, parent=None):
         super().__init__(parent)
